@@ -74,9 +74,10 @@ def login_teacher(username, password):
         return False, "Incorrect password"
     return True, user.iloc[0].to_dict()
 
-def save_resource_for_teacher(username, resource_name, r_type, path):
-    df = pd.read_csv(SAVED_RESOURCES_DB) if os.path.exists(SAVED_RESOURCES_DB) else pd.DataFrame(columns=["teacher_username","resource_name","type","path","timestamp"])
-    df = pd.concat([df,pd.DataFrame([[username,resource_name,r_type,path,datetime.now()]], columns=df.columns)], ignore_index=True)
+def save_resource_for_teacher(username, resource_name, r_type, path, is_public=False):
+    df = pd.read_csv(SAVED_RESOURCES_DB) if os.path.exists(SAVED_RESOURCES_DB) else pd.DataFrame(
+        columns=["teacher_username","resource_name","type","path","timestamp","is_public","likes"])
+    df = pd.concat([df,pd.DataFrame([[username,resource_name,r_type,path,datetime.now(),is_public,0]], columns=df.columns)], ignore_index=True)
     df.to_csv(SAVED_RESOURCES_DB, index=False)
 
 def log_download(resource_name, user="anonymous"):
@@ -103,6 +104,8 @@ if "logged_in_teacher" not in st.session_state:
     st.session_state.logged_in_teacher = None
 if "login_prompt" not in st.session_state:
     st.session_state.login_prompt = False
+if "chosen_template" not in st.session_state:
+    st.session_state.chosen_template = None
 
 # -------------------------
 # Streamlit Page Setup
@@ -139,12 +142,13 @@ if menu == "Home":
     search_query = st.text_input("Search template/resource", "")
     filtered_templates = [t for t in available_templates if search_query.lower() in t.lower()] if search_query else available_templates
 
-    # ---------------- Guest Marketplace Preview ----------------
+    # ---------------- Guest / Teacher Marketplace Preview ----------------
     st.subheader("🎨 Browse Templates / Community Resources")
     cols = st.columns(3)
 
     # Load community resources
-    community_df = pd.read_csv(SAVED_RESOURCES_DB) if os.path.exists(SAVED_RESOURCES_DB) else pd.DataFrame(columns=["teacher_username","resource_name","type","path","timestamp"])
+    community_df = pd.read_csv(SAVED_RESOURCES_DB) if os.path.exists(SAVED_RESOURCES_DB) else pd.DataFrame(
+        columns=["teacher_username","resource_name","type","path","timestamp","is_public","likes"])
     if search_query:
         community_df = community_df[community_df["resource_name"].str.lower().str.contains(search_query.lower())]
 
@@ -152,8 +156,8 @@ if menu == "Home":
 
     for i, resource in enumerate(resources_to_show):
         col = cols[i % 3]
-        preview_path = os.path.join(PREVIEW_DIR, f"{resource}.png")
         with col:
+            preview_path = os.path.join(PREVIEW_DIR, f"{resource}.png")
             if os.path.exists(preview_path):
                 st.image(preview_path, use_container_width=True)
             else:
@@ -162,12 +166,13 @@ if menu == "Home":
                 img.save(buf, format="PNG")
                 st.image(buf.getvalue(), use_container_width=True)
             st.markdown(f"**{resource}**")
+            
+            # Guest / Teacher Actions
             if st.session_state.get("logged_in_teacher"):
                 if st.button(f"Select {resource}", key=f"btn_{i}"):
                     st.session_state["chosen_template"] = resource
                     st.success(f"Selected {resource}")
             else:
-                # Guest request download button
                 if st.button(f"Request Download", key=f"guest_{i}"):
                     st.session_state.login_prompt = True
 
@@ -175,6 +180,33 @@ if menu == "Home":
     if st.session_state.login_prompt:
         st.warning("You must log in or register to download or generate lessons.")
         st.session_state.login_prompt = False
+
+    # ---------------- Public Community Section ----------------
+    st.subheader("🌍 Public Community Resources")
+    public_df = community_df[community_df["is_public"]==True] if not community_df.empty else pd.DataFrame(columns=community_df.columns)
+    if not public_df.empty:
+        cols = st.columns(3)
+        for i, row in public_df.iterrows():
+            col = cols[i % 3]
+            with col:
+                preview_path = os.path.join(PREVIEW_DIR, f"{row['resource_name']}.png")
+                if os.path.exists(preview_path):
+                    st.image(preview_path, use_container_width=True)
+                else:
+                    img = create_card_preview(row['resource_name'])
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    st.image(buf.getvalue(), use_container_width=True)
+                
+                st.markdown(f"**{row['resource_name']}** by {row['teacher_username']}")
+                st.markdown(f"👍 {row['likes']} likes")
+                if st.session_state.get("logged_in_teacher"):
+                    if st.button(f"Like {row['resource_name']}", key=f"like_{i}"):
+                        df = pd.read_csv(SAVED_RESOURCES_DB)
+                        idx = df[df["resource_name"]==row['resource_name']].index[0]
+                        df.at[idx,'likes'] += 1
+                        df.to_csv(SAVED_RESOURCES_DB, index=False)
+                        st.experimental_rerun()
 
     # ---------------- Teacher-only Section ----------------
     if st.session_state.get("logged_in_teacher"):
@@ -184,7 +216,8 @@ if menu == "Home":
         # ---------------- Teacher Analytics ----------------
         teacher = st.session_state["logged_in_teacher"]
         st.markdown("### 📊 Your Analytics")
-        df_saved = pd.read_csv(SAVED_RESOURCES_DB) if os.path.exists(SAVED_RESOURCES_DB) else pd.DataFrame(columns=["teacher_username","resource_name","type","path","timestamp"])
+        df_saved = pd.read_csv(SAVED_RESOURCES_DB) if os.path.exists(SAVED_RESOURCES_DB) else pd.DataFrame(
+            columns=["teacher_username","resource_name","type","path","timestamp","is_public","likes"])
         df_downloads = pd.read_csv(DOWNLOAD_LOG) if os.path.exists(DOWNLOAD_LOG) else pd.DataFrame(columns=["Resource","User","Timestamp"])
         user_saved = df_saved[df_saved["teacher_username"] == teacher["username"]]
         downloads_user = df_downloads.merge(user_saved, left_on="Resource", right_on="resource_name", how="inner")
@@ -212,7 +245,6 @@ if menu == "Home":
             if st.session_state.requests_today >= 5:
                 st.warning("⚠️ Daily generation limit reached (5 lessons per session).")
                 st.stop()
-            st.session_state.requests_today += 1
 
             if not topic:
                 st.warning("Enter lesson topic")
@@ -274,17 +306,18 @@ Include:
                 prs.save(ppt_file)
 
                 teacher_username = st.session_state["logged_in_teacher"]["username"]
+                is_public = st.checkbox("🌐 Share this lesson publicly?", value=False)
                 col1, col2 = st.columns(2)
                 with col1:
                     with open(word_file,"rb") as f:
                         if st.download_button("📄 Download Word", f, file_name=word_file):
                             log_download(word_file, teacher_username)
-                            save_resource_for_teacher(teacher_username, word_file, "Word", os.path.abspath(word_file))
+                            save_resource_for_teacher(teacher_username, word_file, "Word", os.path.abspath(word_file), is_public)
                 with col2:
                     with open(ppt_file,"rb") as f:
                         if st.download_button("🎞️ Download Slides", f, file_name=ppt_file):
                             log_download(ppt_file, teacher_username)
-                            save_resource_for_teacher(teacher_username, ppt_file, "PPT", os.path.abspath(ppt_file))
+                            save_resource_for_teacher(teacher_username, ppt_file, "PPT", os.path.abspath(ppt_file), is_public)
 
 # -------------------------
 # Download Analytics Page
