@@ -1,50 +1,128 @@
-import google.generativeai as genai
 import streamlit as st
+import google.generativeai as genai
 from docx import Document
 from pptx import Presentation
 from pptx.util import Pt
 import re
 import os
+import random
+from dotenv import load_dotenv
+from PIL import Image, ImageDraw, ImageFont
+import io
 
-# --- Streamlit UI ---
+# --- Load environment variables ---
+load_dotenv()
+api_key = os.getenv("GEMINI_API_KEY")
+
+# --- Streamlit Page Setup ---
 st.set_page_config(page_title="AI Teacher Resource Finder", page_icon="🧠", layout="wide")
 st.title("🧠 AI Teacher Resource Finder")
-st.write("Instantly generate lesson notes, teaching slides, and ideas for any topic!")
+st.caption("Create beautiful, ready-to-teach lesson slides with AI in seconds!")
 
-# --- Gemini API Key ---
-api_key = st.text_input("🔑 Enter your Gemini API Key:", type="password")
+# --- Gemini API Key Input ---
+api_key_input = st.text_input("🔑 Enter your Gemini API Key:", type="password", value=api_key if api_key else "")
 
-if api_key:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("models/gemini-2.5-flash")
+# --- Folder Setup ---
+TEMPLATE_DIR = "templates"
+PREVIEW_DIR = "template_previews"
 
-    topic = st.text_input("Enter your lesson topic:")
+# Ensure folders exist
+if not os.path.exists(TEMPLATE_DIR):
+    os.makedirs(TEMPLATE_DIR)
+if not os.path.exists(PREVIEW_DIR):
+    os.makedirs(PREVIEW_DIR)
 
-    if st.button("Find Resources"):
-        if topic.strip():
+# --- Load Templates ---
+available_templates = [f for f in os.listdir(TEMPLATE_DIR) if f.endswith(".pptx")]
+
+if not available_templates:
+    st.error("⚠️ No PowerPoint templates found in the 'templates' folder. Please add at least one .pptx file.")
+    st.stop()
+
+# --- Template Selection Section ---
+st.subheader("🎨 Choose a Slide Template")
+
+cols = st.columns(3)
+chosen_template = st.session_state.get("chosen_template", None)
+template_options = available_templates + ["🎲 Random Template"]
+
+def create_placeholder_preview(text, color):
+    """Create a simple colored preview image when no PNG preview exists."""
+    img = Image.new("RGB", (400, 250), color)
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.load_default()
+    text = text.replace("_", " ").title()
+    w, h = draw.textsize(text, font=font)
+    draw.text(((400 - w) / 2, (250 - h) / 2), text, fill="white", font=font)
+    return img
+
+placeholder_colors = [
+    "#4B8BBE", "#306998", "#FFD43B", "#FFE873", "#646464",
+    "#FF5733", "#33FF57", "#339BFF", "#8E44AD", "#2ECC71"
+]
+
+for i, template_file in enumerate(template_options):
+    col = cols[i % 3]
+    base_name = os.path.splitext(template_file)[0]
+    preview_path = os.path.join(PREVIEW_DIR, f"{base_name}.png")
+
+    with col:
+        if os.path.exists(preview_path):
+            st.image(preview_path, use_container_width=True)
+        else:
+            color = placeholder_colors[i % len(placeholder_colors)]
+            img = create_placeholder_preview(base_name, color)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            st.image(buf.getvalue(), use_container_width=True)
+
+        if st.button(f"Select: {base_name.replace('_', ' ').title()}"):
+            st.session_state["chosen_template"] = template_file
+            chosen_template = template_file
+            st.success(f"✅ Selected: {base_name.title()}")
+
+# --- Get Selected Template ---
+chosen_template = st.session_state.get("chosen_template", None)
+
+# --- Main Lesson Generator ---
+if api_key_input:
+    genai.configure(api_key=api_key_input)
+    model = genai.GenerativeModel("models/gemini-2.0-flash")
+
+    topic = st.text_input("📘 Enter your lesson topic:")
+
+    if st.button("✨ Generate Lesson Slides"):
+        if not topic.strip():
+            st.warning("Please enter a topic before generating.")
+        elif not chosen_template:
+            st.warning("Please select a slide template first.")
+        else:
             with st.spinner("🧠 Generating your teaching pack... please wait..."):
                 try:
                     prompt = f"""
                     You are an expert teacher and PowerPoint creator.
                     Create a detailed lesson pack on the topic: "{topic}".
-                    Include these clear sections:
+                    Include these sections clearly labeled:
 
                     1. Lesson Objectives
                     2. Introduction / Starter Activity
                     3. Key Teaching Points
-                    4. Guided Practice or Activities
+                    4. Guided Practice / Class Activities
                     5. Assessment Ideas
                     6. Summary / Conclusion
-                    7. PowerPoint Slide Outline (slide titles with bullet points)
+                    7. PowerPoint Slide Outline (titles + bullet points)
+
+                    Make it engaging and age-appropriate.
                     """
 
+                    # --- Generate Lesson Text ---
                     response = model.generate_content(prompt)
                     lesson_text = response.text
 
                     st.success("✅ Lesson materials generated successfully!")
-                    st.write(lesson_text)
+                    st.text_area("📄 Generated Lesson Content:", lesson_text, height=300)
 
-                    # --- Word document creation ---
+                    # --- Save Word File ---
                     doc = Document()
                     doc.add_heading(f"Lesson Plan: {topic}", level=1)
                     doc.add_paragraph(lesson_text)
@@ -53,62 +131,61 @@ if api_key:
 
                     with open(word_file, "rb") as file:
                         st.download_button(
-                            label="📄 Download Lesson as Word File",
+                            label="📄 Download Lesson (Word)",
                             data=file,
                             file_name=word_file,
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                         )
 
-                    # --- PowerPoint creation using template ---
-                    template_path = "template.pptx"
-                    if not os.path.exists(template_path):
-                        st.error("⚠️ Template file not found! Please add template.pptx in your app folder.")
-                    else:
-                        prs = Presentation(template_path)
+                    # --- Handle Random Template ---
+                    if chosen_template == "🎲 Random Template":
+                        chosen_template = random.choice(available_templates)
 
-                        # Add title slide
-                        title_slide_layout = prs.slide_layouts[0]
-                        slide = prs.slides.add_slide(title_slide_layout)
-                        slide.shapes.title.text = f"Lesson on {topic}"
-                        if len(slide.placeholders) > 1:
-                            slide.placeholders[1].text = "AI-Generated Teaching Slides"
+                    # --- Load Template ---
+                    template_path = os.path.join(TEMPLATE_DIR, chosen_template)
+                    prs = Presentation(template_path)
 
-                        # Split sections
-                        sections = re.split(r'\n\d+\.\s', lesson_text)
-                        sections = [s.strip() for s in sections if len(s.strip()) > 0]
+                    # --- Add Generated Slides ---
+                    sections = re.split(r'\n\d+\.\s', lesson_text)
+                    sections = [s.strip() for s in sections if len(s.strip()) > 0]
 
-                        # Add each section as a new slide
-                        for section in sections:
-                            slide_layout = prs.slide_layouts[1]  # Title + content layout
-                            slide = prs.slides.add_slide(slide_layout)
-                            lines = section.split("\n")
-                            slide_title = lines[0][:80]
-                            slide_content = "\n".join(lines[1:]) if len(lines) > 1 else ""
+                    for section in sections:
+                        slide = prs.slides.add_slide(prs.slide_layouts[1])
+                        title_box = slide.shapes.title
+                        content_box = slide.placeholders[1]
 
-                            slide.shapes.title.text = slide_title
-                            slide.placeholders[1].text = slide_content.strip()
+                        lines = section.split("\n")
+                        title_box.text = lines[0][:80]
+                        body = "\n".join(lines[1:]) if len(lines) > 1 else ""
+                        content_box.text = body.strip()
 
-                            # Optional font styling
-                            for shape in slide.shapes:
-                                if hasattr(shape, "text_frame") and shape.text_frame:
-                                    for paragraph in shape.text_frame.paragraphs:
-                                        for run in paragraph.runs:
-                                            run.font.size = Pt(20)
+                        # Adjust font size
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text_frame") and shape.text_frame:
+                                for paragraph in shape.text_frame.paragraphs:
+                                    for run in paragraph.runs:
+                                        run.font.size = Pt(18)
 
-                        ppt_file = f"{topic}_slides.pptx"
-                        prs.save(ppt_file)
+                    # --- Save PowerPoint ---
+                    ppt_file = f"{topic}_slides_{os.path.splitext(chosen_template)[0]}.pptx"
+                    prs.save(ppt_file)
 
-                        with open(ppt_file, "rb") as ppt:
-                            st.download_button(
-                                label="🎞️ Download PowerPoint Slides",
-                                data=ppt,
-                                file_name=ppt_file,
-                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                            )
+                    with open(ppt_file, "rb") as ppt:
+                        st.download_button(
+                            label="🎞️ Download PowerPoint Slides",
+                            data=ppt,
+                            file_name=ppt_file,
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                        )
 
                 except Exception as e:
-                    st.error(f"⚠️ An error occurred: {e}")
-        else:
-            st.warning("Please enter a topic before searching.")
+                    st.error(f"⚠️ Error: {e}")
 else:
     st.info("Please enter your Gemini API key to start.")
+
+# --- Footer ---
+st.sidebar.markdown("**Developed by Prince Edward Paul © 2025**")
+
+
+
+
