@@ -17,10 +17,7 @@ import time
 # Load environment variables
 # -------------------------
 load_dotenv()
-try:
-    gemini_key = os.environ.get("GEMINI_API_KEY") or st.secrets["GEMINI_API_KEY"]
-except:
-    gemini_key = None
+gemini_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
 
 # -------------------------
 # Streamlit Page Setup
@@ -99,6 +96,9 @@ def generate_lesson(prompt, api_key):
     response = model.generate_content(prompt)
     return response.text
 
+def sanitize_filename(name):
+    return re.sub(r"[^\w\s-]", "", name).replace(" ","_")
+
 # -------------------------
 # HOME PAGE
 # -------------------------
@@ -172,6 +172,7 @@ Include:
 6. Summary
 7. Slide Outline
 """
+
                 # ----------------- RETRY LOGIC -----------------
                 max_retries = 3
                 for attempt in range(max_retries):
@@ -179,35 +180,62 @@ Include:
                         lesson_text = generate_lesson(prompt, gemini_key)
                         break
                     except Exception as e:
-                        if "ResourceExhausted" in str(e):
+                        err_str = str(e)
+                        if "ResourceExhausted" in err_str:
                             if attempt < max_retries - 1:
+                                st.info("AI server busy, retrying...")
                                 time.sleep(5)
                             else:
-                                st.error("⚠️ AI server is busy. Try again later.")
+                                st.error("⚠️ AI server busy. Try again later.")
                                 st.stop()
+                        elif "Quota exceeded" in err_str or "429" in err_str:
+                            st.error("""
+⚠️ Your Gemini API quota has been exceeded.  
+
+- Free Tier requests left: 0  
+- Either wait for daily reset or upgrade your billing plan:  
+[Gemini API Quotas & Limits](https://ai.google.dev/gemini-api/docs/rate-limits)
+""")
+                            st.stop()
                         else:
                             st.error(f"Error: {e}")
                             st.stop()
 
-                # ----------------- SAVE WORD -----------------
+                # ----------------- SAVE FILES -----------------
+                safe_topic = sanitize_filename(topic)
+                word_file = f"{safe_topic}_lesson.docx"
+                ppt_file = f"{safe_topic}_slides.pptx"
+
+                # --- Word ---
                 doc = Document()
                 doc.add_heading(f"Lesson Plan: {topic}", level=1)
                 doc.add_paragraph(lesson_text)
-                word_file = f"{topic}_lesson.docx"
                 doc.save(word_file)
 
-                # ----------------- SAVE PPT -----------------
+                # --- PPT ---
+                template_to_use = chosen_template
                 if chosen_template == "🎲 Random Template":
-                    chosen_template = random.choice(available_templates)
-                template_path = os.path.join(TEMPLATE_DIR, chosen_template)
+                    template_to_use = random.choice(available_templates)
+                    st.info(f"Random template selected: {template_to_use}")
+
+                template_path = os.path.join(TEMPLATE_DIR, template_to_use)
                 prs = Presentation(template_path)
-                sections = [s.strip() for s in re.split(r"\n\d+\.\s", lesson_text) if s.strip()]
+
+                # Extract Slide Outline if available
+                slide_outline_match = re.search(r"Slide Outline:(.*)", lesson_text, re.DOTALL)
+                if slide_outline_match:
+                    sections = [s.strip() for s in slide_outline_match.group(1).split("\n") if s.strip()]
+                else:
+                    sections = [s.strip() for s in lesson_text.split("\n\n") if s.strip()]
+
                 for section in sections:
+                    if not section:
+                        continue
                     slide = prs.slides.add_slide(prs.slide_layouts[1])
                     lines = section.split("\n")
                     slide.shapes.title.text = lines[0]
-                    slide.placeholders[1].text = "\n".join(lines[1:])
-                ppt_file = f"{topic}_slides.pptx"
+                    if len(lines) > 1:
+                        slide.placeholders[1].text = "\n".join(lines[1:])
                 prs.save(ppt_file)
 
                 # ----------------- DOWNLOAD BUTTONS -----------------
