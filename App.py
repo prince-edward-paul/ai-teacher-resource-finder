@@ -332,31 +332,92 @@ if menu=="Download Analytics":
         st.info("No downloads yet")
 
 # -------------------------
-# Settings Page (Login/Register)
+# Settings Page (Login/Register + Profile)
 # -------------------------
-if menu=="Settings":
-    st.subheader("Teacher Login / Register")
-    tab1, tab2 = st.tabs(["Login","Register"])
-    with tab1:
-        username = st.text_input("Username","",key="login_user")
-        password = st.text_input("Password","",type="password",key="login_pass")
-        if st.button("Login"):
-            ok, res = login_teacher(username,password)
-            if ok:
-                st.success("Logged in successfully")
-                st.session_state["logged_in_teacher"] = res
+st.subheader("Teacher Login / Register / Profile")
+tab1, tab2, tab3 = st.tabs(["Login","Register","Profile"])
+
+# ---- Login ----
+with tab1:
+    username = st.text_input("Username","",key="login_user")
+    password = st.text_input("Password","",type="password",key="login_pass")
+    if st.button("Login"):
+        ok, res = login_teacher(username,password)
+        if ok:
+            st.success("Logged in successfully")
+            st.session_state["logged_in_teacher"] = res
+        else:
+            st.error(res)
+
+# ---- Register ----
+with tab2:
+    r_username = st.text_input("Username","",key="reg_user")
+    r_email = st.text_input("Email","",key="reg_email")
+    r_password = st.text_input("Password","",type="password",key="reg_pass")
+    if st.button("Register"):
+        ok, msg = register_teacher(r_username,r_password,r_email)
+        if ok:
+            st.success(msg)
+        else:
+            st.error(msg)
+
+# ---- Profile ----
+with tab3:
+    if st.session_state.get("logged_in_teacher"):
+        teacher = st.session_state["logged_in_teacher"]
+        st.markdown(f"**Username:** {teacher['username']}")
+        st.markdown(f"**Email:** {teacher['email']}")
+
+        # Change password
+        st.markdown("### 🔑 Change Password")
+        current_pass = st.text_input("Current Password", type="password", key="current_pass")
+        new_pass = st.text_input("New Password", type="password", key="new_pass")
+        confirm_pass = st.text_input("Confirm New Password", type="password", key="confirm_pass")
+        if st.button("Update Password"):
+            df_users = pd.read_csv(USERS_DB)
+            user_idx = df_users[df_users["username"]==teacher["username"]].index[0]
+            if hash_password(current_pass) != df_users.at[user_idx, "password_hash"]:
+                st.error("Current password is incorrect")
+            elif new_pass != confirm_pass:
+                st.error("New passwords do not match")
             else:
-                st.error(res)
-    with tab2:
-        r_username = st.text_input("Username","",key="reg_user")
-        r_email = st.text_input("Email","",key="reg_email")
-        r_password = st.text_input("Password","",type="password",key="reg_pass")
-        if st.button("Register"):
-            ok, msg = register_teacher(r_username,r_password,r_email)
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
+                df_users.at[user_idx,"password_hash"] = hash_password(new_pass)
+                df_users.to_csv(USERS_DB, index=False)
+                st.success("Password updated successfully")
+
+        # Manage saved resources
+        st.markdown("### 💾 Your Saved Resources")
+        df_saved = pd.read_csv(SAVED_RESOURCES_DB) if os.path.exists(SAVED_RESOURCES_DB) else pd.DataFrame(
+            columns=["teacher_username","resource_name","type","path","timestamp","is_public","likes"])
+        user_saved = df_saved[df_saved["teacher_username"]==teacher["username"]]
+        if not user_saved.empty:
+            for i, row in user_saved.iterrows():
+                st.markdown(f"**{row['resource_name']}** ({row['type']}) - Public: {row['is_public']}")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("Delete", key=f"del_{i}"):
+                        df_saved = df_saved.drop(row.name)
+                        df_saved.to_csv(SAVED_RESOURCES_DB, index=False)
+                        st.success(f"Deleted {row['resource_name']}")
+                        st.experimental_rerun()
+                with col2:
+                    new_name = st.text_input(f"Rename {row['resource_name']}", value=row['resource_name'], key=f"rename_{i}")
+                    if st.button("Update Name", key=f"update_{i}"):
+                        df_saved.at[row.name,"resource_name"] = new_name
+                        df_saved.to_csv(SAVED_RESOURCES_DB, index=False)
+                        st.success(f"Updated name to {new_name}")
+                        st.experimental_rerun()
+                with col3:
+                    is_public = st.checkbox("Public", value=row['is_public'], key=f"pub_{i}")
+                    if is_public != row['is_public']:
+                        df_saved.at[row.name,"is_public"] = is_public
+                        df_saved.to_csv(SAVED_RESOURCES_DB, index=False)
+                        st.success(f"Updated public status for {row['resource_name']}")
+                        st.experimental_rerun()
+        else:
+            st.info("No saved resources yet")
+    else:
+        st.info("Log in to view your profile")
 
 # -------------------------
 # Footer
