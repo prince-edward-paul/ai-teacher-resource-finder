@@ -5,7 +5,7 @@ from pptx import Presentation
 import re, os, random, io, time
 from PIL import Image, ImageDraw, ImageFont
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import hashlib
 import sqlite3
@@ -37,7 +37,6 @@ available_templates = [f for f in os.listdir(TEMPLATE_DIR) if f.endswith(".pptx"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Users table
     c.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +46,6 @@ def init_db():
         role TEXT
     )
     """)
-    # Resources table
     c.execute("""
     CREATE TABLE IF NOT EXISTS resources (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,16 +55,26 @@ def init_db():
         path TEXT,
         timestamp TEXT,
         is_public INTEGER DEFAULT 0,
-        likes INTEGER DEFAULT 0
+        likes INTEGER DEFAULT 0,
+        category TEXT DEFAULT 'General',
+        tags TEXT DEFAULT ''
     )
     """)
-    # Downloads table
     c.execute("""
     CREATE TABLE IF NOT EXISTS downloads (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         resource_name TEXT,
         user TEXT,
         timestamp TEXT
+    )
+    """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_username TEXT,
+        message TEXT,
+        timestamp TEXT,
+        read INTEGER DEFAULT 0
     )
     """)
     conn.commit()
@@ -96,7 +104,9 @@ def create_card_preview(text, color="#4B8BBE"):
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# ---- User Functions ----
+# -------------------------
+# User Functions
+# -------------------------
 def register_teacher(username, password, email):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -122,14 +132,16 @@ def login_teacher(username, password):
         return False, "Incorrect password"
     return True, {"username": row[0], "password_hash": row[1], "email": row[2], "role": row[3]}
 
-# ---- Resource Functions ----
-def save_resource_for_teacher(username, resource_name, r_type, path, is_public=False):
+# -------------------------
+# Resource Functions
+# -------------------------
+def save_resource_for_teacher(username, resource_name, r_type, path, is_public=False, category="General", tags=""):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
-        INSERT INTO resources (teacher_username, resource_name, type, path, timestamp, is_public, likes)
-        VALUES (?,?,?,?,?,?,?)
-    """, (username, resource_name, r_type, path, datetime.now(), int(is_public), 0))
+        INSERT INTO resources (teacher_username, resource_name, type, path, timestamp, is_public, likes, category, tags)
+        VALUES (?,?,?,?,?,?,?,?,?)
+    """, (username, resource_name, r_type, path, datetime.now(), int(is_public), 0, category, tags))
     conn.commit()
     conn.close()
 
@@ -138,6 +150,13 @@ def log_download(resource_name, user="anonymous"):
     c = conn.cursor()
     c.execute("INSERT INTO downloads (resource_name, user, timestamp) VALUES (?,?,?)",
               (resource_name, user, datetime.now()))
+    c.execute("SELECT teacher_username FROM resources WHERE resource_name=?", (resource_name,))
+    row = c.fetchone()
+    if row:
+        teacher = row[0]
+        msg = f"Your resource '{resource_name}' was downloaded by {user}."
+        c.execute("INSERT INTO notifications (teacher_username, message, timestamp) VALUES (?,?,?)",
+                  (teacher, msg, datetime.now()))
     conn.commit()
     conn.close()
 
@@ -147,12 +166,21 @@ def get_saved_resources(username):
     conn.close()
     return df
 
-def get_public_resources(search_query=""):
+def get_public_resources(search_query="", category="All"):
     conn = sqlite3.connect(DB_FILE)
+    base_query = "SELECT * FROM resources WHERE is_public=1"
+    params = []
+
+    if category != "All":
+        base_query += " AND category=?"
+        params.append(category)
+
     if search_query:
-        df = pd.read_sql_query(f"SELECT * FROM resources WHERE is_public=1 AND resource_name LIKE '%{search_query}%'", conn)
-    else:
-        df = pd.read_sql_query("SELECT * FROM resources WHERE is_public=1", conn)
+        base_query += " AND (resource_name LIKE ? OR tags LIKE ?)"
+        params.append(f"%{search_query}%")
+        params.append(f"%{search_query}%")
+
+    df = pd.read_sql_query(base_query, conn, params=params)
     conn.close()
     return df
 
@@ -162,7 +190,29 @@ def get_downloads():
     conn.close()
     return df
 
-# ---- AI Lesson Generation ----
+def like_resource(resource_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE resources SET likes = likes + 1 WHERE id=?", (resource_id,))
+    conn.commit()
+    conn.close()
+
+def get_notifications(username):
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query(f"SELECT * FROM notifications WHERE teacher_username='{username}' AND read=0", conn)
+    conn.close()
+    return df
+
+def mark_notifications_read(username):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE notifications SET read=1 WHERE teacher_username=?", (username,))
+    conn.commit()
+    conn.close()
+
+# -------------------------
+# AI Lesson Generation
+# -------------------------
 def generate_lesson(prompt, api_key):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-2.0-flash")
@@ -172,16 +222,9 @@ def generate_lesson(prompt, api_key):
 # -------------------------
 # Session State Init
 # -------------------------
-if "requests_today" not in st.session_state:
-    st.session_state.requests_today = 0
-if "last_request" not in st.session_state:
-    st.session_state.last_request = 0
-if "logged_in_teacher" not in st.session_state:
-    st.session_state.logged_in_teacher = None
-if "login_prompt" not in st.session_state:
-    st.session_state.login_prompt = False
-if "chosen_template" not in st.session_state:
-    st.session_state.chosen_template = None
+for key in ["requests_today","last_request","logged_in_teacher","login_prompt","chosen_template"]:
+    if key not in st.session_state:
+        st.session_state[key] = 0 if key in ["requests_today","last_request"] else None
 
 # -------------------------
 # Streamlit Page Setup
@@ -192,7 +235,7 @@ st.set_page_config(page_title="AI Teacher Resource Finder", page_icon="🎓", la
 # Sidebar Navigation
 # -------------------------
 st.sidebar.title("Navigation")
-menu = st.sidebar.radio("Menu", ["Home", "Download Analytics", "Settings"])
+menu = st.sidebar.radio("Menu", ["Home", "Download Analytics", "Notifications", "Settings"])
 
 # -------------------------
 # Hero Section
@@ -215,16 +258,16 @@ margin-bottom:20px;">
 # -------------------------
 if menu == "Home":
     st.subheader("🔍 Search Templates / Community Resources")
+
+    categories = ["All","Math","Science","English","History","Art"]
+    selected_category = st.selectbox("Category", categories)
     search_query = st.text_input("Search template/resource", "")
+
     filtered_templates = [t for t in available_templates if search_query.lower() in t.lower()] if search_query else available_templates
-
-    # ---------------- Guest / Teacher Marketplace Preview ----------------
-    st.subheader("🎨 Browse Templates / Community Resources")
-    cols = st.columns(3)
-
-    community_df = get_public_resources(search_query)
+    community_df = get_public_resources(search_query, selected_category)
     resources_to_show = filtered_templates + community_df["resource_name"].tolist() + ["🎲 Random Template"]
 
+    cols = st.columns(3)
     for i, resource in enumerate(resources_to_show):
         col = cols[i % 3]
         with col:
@@ -237,26 +280,29 @@ if menu == "Home":
                 img.save(buf, format="PNG")
                 st.image(buf.getvalue(), use_container_width=True)
             st.markdown(f"**{resource}**")
-            
+            row = community_df[community_df["resource_name"]==resource]
+            if not row.empty:
+                st.markdown(f"Likes: {row.iloc[0]['likes']}")
+
             if st.session_state.get("logged_in_teacher"):
                 if st.button(f"Select {resource}", key=f"btn_{i}"):
                     st.session_state["chosen_template"] = resource
-                    st.success(f"Selected {resource}")
+                if not row.empty:
+                    if st.button("👍 Like", key=f"like_{i}"):
+                        like_resource(int(row.iloc[0]["id"]))
+                        st.success(f"You liked {resource}")
+                        st.experimental_rerun()
             else:
-                if st.button(f"Request Download", key=f"guest_{i}"):
-                    st.session_state.login_prompt = True
-
-    if st.session_state.login_prompt:
-        st.warning("You must log in or register to download or generate lessons.")
-        st.session_state.login_prompt = False
-
-    # ---------------- Teacher-only Section ----------------
+                if st.button(f"Preview / Request Download", key=f"guest_{i}"):
+                    st.info("Log in to download or generate lessons")
+    # -------------------------
+    # Teacher Section: Generate Lessons
+    # -------------------------
     if st.session_state.get("logged_in_teacher"):
         chosen_template = st.session_state.get("chosen_template", None)
         topic = st.text_input("📘 Lesson Topic")
         teacher = st.session_state["logged_in_teacher"]
 
-        # Analytics
         st.markdown("### 📊 Your Analytics")
         user_saved = get_saved_resources(teacher["username"])
         downloads_user = get_downloads().merge(user_saved, left_on="resource_name", right_on="resource_name", how="inner")
@@ -343,21 +389,25 @@ Include:
                         slide.placeholders[1].text = "\n".join(lines[1:])
                 prs.save(ppt_file)
 
+                # Public/Category/Tags
                 is_public = st.checkbox("🌐 Share this lesson publicly?", value=False)
+                category = st.selectbox("Category", ["General","Math","Science","English","History","Art"])
+                tags = st.text_input("Tags (comma separated)", "")
+
                 col1, col2 = st.columns(2)
                 with col1:
                     with open(word_file,"rb") as f:
                         if st.download_button("📄 Download Word", f, file_name=word_file):
                             log_download(word_file, teacher["username"])
-                            save_resource_for_teacher(teacher["username"], word_file, "Word", os.path.abspath(word_file), is_public)
+                            save_resource_for_teacher(teacher["username"], word_file, "Word", os.path.abspath(word_file), is_public, category, tags)
                 with col2:
                     with open(ppt_file,"rb") as f:
                         if st.download_button("🎞️ Download Slides", f, file_name=ppt_file):
                             log_download(ppt_file, teacher["username"])
-                            save_resource_for_teacher(teacher["username"], ppt_file, "PPT", os.path.abspath(ppt_file), is_public)
+                            save_resource_for_teacher(teacher["username"], ppt_file, "PPT", os.path.abspath(ppt_file), is_public, category, tags)
 
 # -------------------------
-# Download Analytics Page
+# Download Analytics
 # -------------------------
 if menu=="Download Analytics":
     st.subheader("📊 Resource Downloads")
@@ -369,11 +419,27 @@ if menu=="Download Analytics":
         st.info("No downloads yet")
 
 # -------------------------
-# Settings Page (Login/Register/Profile)
+# Notifications / Alerts
+# -------------------------
+if menu=="Notifications":
+    if st.session_state.get("logged_in_teacher"):
+        teacher = st.session_state["logged_in_teacher"]
+        st.subheader("🔔 Notifications")
+        notifs = get_notifications(teacher["username"])
+        if not notifs.empty:
+            for i, row in notifs.iterrows():
+                st.info(f"{row['timestamp']}: {row['message']}")
+            mark_notifications_read(teacher["username"])
+        else:
+            st.info("No new notifications")
+    else:
+        st.warning("Log in to view notifications")
+
+# -------------------------
+# Settings (Login/Register/Profile)
 # -------------------------
 tab1, tab2, tab3 = st.tabs(["Login","Register","Profile"])
 
-# ---- Login ----
 with tab1:
     username = st.text_input("Username","",key="login_user")
     password = st.text_input("Password","",type="password",key="login_pass")
@@ -385,7 +451,6 @@ with tab1:
         else:
             st.error(res)
 
-# ---- Register ----
 with tab2:
     r_username = st.text_input("Username","",key="reg_user")
     r_email = st.text_input("Email","",key="reg_email")
@@ -397,14 +462,13 @@ with tab2:
         else:
             st.error(msg)
 
-# ---- Profile ----
 with tab3:
     if st.session_state.get("logged_in_teacher"):
         teacher = st.session_state["logged_in_teacher"]
         st.markdown(f"**Username:** {teacher['username']}")
         st.markdown(f"**Email:** {teacher['email']}")
 
-        # Change password
+        # Password change
         st.markdown("### 🔑 Change Password")
         current_pass = st.text_input("Current Password", type="password", key="current_pass")
         new_pass = st.text_input("New Password", type="password", key="new_pass")
@@ -425,15 +489,15 @@ with tab3:
                 st.success("Password updated successfully")
             conn.close()
 
-        # Manage saved resources
+        # Manage resources
         st.markdown("### 💾 Your Saved Resources")
         user_saved = get_saved_resources(teacher["username"])
         if not user_saved.empty:
             for i, row in user_saved.iterrows():
                 st.markdown(f"**{row['resource_name']}** ({row['type']}) - Public: {bool(row['is_public'])}")
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("Delete", key=f"del_{i}"):
+                    if st.button(f"Delete {row['resource_name']}", key=f"del_{i}"):
                         conn = sqlite3.connect(DB_FILE)
                         c = conn.cursor()
                         c.execute("DELETE FROM resources WHERE id=?", (row['id'],))
@@ -442,29 +506,16 @@ with tab3:
                         st.success(f"Deleted {row['resource_name']}")
                         st.experimental_rerun()
                 with col2:
-                    new_name = st.text_input(f"Rename {row['resource_name']}", value=row['resource_name'], key=f"rename_{i}")
-                    if st.button("Update Name", key=f"update_{i}"):
+                    is_public_new = st.checkbox("Public", value=bool(row['is_public']), key=f"pub_{i}")
+                    if st.button("Update", key=f"upd_{i}"):
                         conn = sqlite3.connect(DB_FILE)
                         c = conn.cursor()
-                        c.execute("UPDATE resources SET resource_name=? WHERE id=?", (new_name, row['id']))
+                        c.execute("UPDATE resources SET is_public=?, category=?, tags=? WHERE id=?",
+                                  (int(is_public_new), row['category'], row['tags'], row['id']))
                         conn.commit()
                         conn.close()
-                        st.success(f"Updated name to {new_name}")
+                        st.success(f"Updated {row['resource_name']}")
                         st.experimental_rerun()
-                with col3:
-                    is_public = st.checkbox("Public", value=bool(row['is_public']), key=f"pub_{i}")
-                    if is_public != bool(row['is_public']):
-                        conn = sqlite3.connect(DB_FILE)
-                        c = conn.cursor()
-                        c.execute("UPDATE resources SET is_public=? WHERE id=?", (int(is_public), row['id']))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Updated public status for {row['resource_name']}")
-                        st.experimental_rerun()
-        else:
-            st.info("No saved resources yet")
-    else:
-        st.info("Log in to view your profile")
 
 # -------------------------
 # Footer
