@@ -19,8 +19,10 @@ st.set_page_config(page_title="AI Teacher Resource Finder", page_icon="🧠", la
 st.title("🧠 AI Teacher Resource Finder")
 st.caption("Create beautiful, ready-to-teach lesson slides with AI in seconds!")
 
-# --- Gemini API Key Input ---
-api_key_input = st.text_input("🔑 Enter your Gemini API Key:", type="password", value=api_key if api_key else "")
+import os
+
+# Get key from Streamlit Secrets
+gemini_key = os.environ.get("GEMINI_API_KEY")
 
 # --- Folder Setup ---
 TEMPLATE_DIR = "templates"
