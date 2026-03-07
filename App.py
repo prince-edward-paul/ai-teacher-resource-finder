@@ -30,30 +30,6 @@ if "last_request" not in st.session_state:
     st.session_state.last_request = 0
 
 # -------------------------
-# Sidebar Navigation
-# -------------------------
-st.sidebar.title("Navigation")
-menu = st.sidebar.radio("Menu", ["Home", "Download Analytics", "Settings"])
-
-# -------------------------
-# Hero Section
-# -------------------------
-st.markdown("""
-<div style="
-background: linear-gradient(135deg,#4B8BBE,#306998);
-padding:30px;
-border-radius:15px;
-color:white;
-text-align:center;
-margin-bottom:20px;">
-<h1>🎓 AI Teacher Resource Finder</h1>
-<p style="font-size:18px;">
-Create lesson plans and PowerPoint slides instantly using AI
-</p>
-</div>
-""", unsafe_allow_html=True)
-
-# -------------------------
 # Folder Setup
 # -------------------------
 TEMPLATE_DIR = "templates"
@@ -62,12 +38,14 @@ DOWNLOAD_LOG = "downloads.csv"
 
 os.makedirs(TEMPLATE_DIR, exist_ok=True)
 os.makedirs(PREVIEW_DIR, exist_ok=True)
-
 available_templates = [f for f in os.listdir(TEMPLATE_DIR) if f.endswith(".pptx")]
 
 # -------------------------
 # Helper Functions
 # -------------------------
+def sanitize_filename(name):
+    return re.sub(r"[^\w\s-]", "", name).replace(" ","_")
+
 def create_card_preview(text, color="#4B8BBE"):
     img = Image.new("RGB", (400,250), color)
     draw = ImageDraw.Draw(img)
@@ -96,29 +74,43 @@ def generate_lesson(prompt, api_key):
     response = model.generate_content(prompt)
     return response.text
 
-def sanitize_filename(name):
-    return re.sub(r"[^\w\s-]", "", name).replace(" ","_")
+# -------------------------
+# Sidebar Navigation
+# -------------------------
+st.sidebar.title("Navigation")
+menu = st.sidebar.radio("Menu", ["Home", "Download Analytics", "Settings"])
+
+# -------------------------
+# Hero Section
+# -------------------------
+st.markdown("""
+<div style="
+background: linear-gradient(135deg,#4B8BBE,#306998);
+padding:30px;
+border-radius:15px;
+color:white;
+text-align:center;
+margin-bottom:20px;">
+<h1>🎓 AI Teacher Resource Finder</h1>
+<p style="font-size:18px;">
+Create lesson plans and PowerPoint slides instantly using AI
+</p>
+</div>
+""", unsafe_allow_html=True)
 
 # -------------------------
 # HOME PAGE
 # -------------------------
 if menu == "Home":
-
-    if not available_templates:
-        st.warning("⚠️ No templates found in the templates folder.")
-        st.stop()
-
-    st.subheader("🔍 Search for templates")
-    search_query = st.text_input("Search template")
+    st.subheader("🔍 Search Templates")
+    search_query = st.text_input("Search template", "")
     filtered_templates = [t for t in available_templates if search_query.lower() in t.lower()] if search_query else available_templates
     if search_query and not filtered_templates:
         st.info("No templates matched your search")
 
-    template_options = filtered_templates + ["🎲 Random Template"]
     st.subheader("🎨 Choose a Slide Template")
     cols = st.columns(3)
-
-    for i, template_file in enumerate(template_options):
+    for i, template_file in enumerate(filtered_templates + ["🎲 Random Template"]):
         col = cols[i % 3]
         base_name = os.path.splitext(template_file)[0]
         preview_path = os.path.join(PREVIEW_DIR, f"{base_name}.png")
@@ -138,15 +130,13 @@ if menu == "Home":
     topic = st.text_input("📘 Lesson Topic")
 
     if st.button("✨ Generate Lesson"):
-
-        # ------------- COOLDOWN CHECK -------------
-        current_time = time.time()
-        if current_time - st.session_state.last_request < 10:
+        # --- COOLDOWN ---
+        if time.time() - st.session_state.last_request < 10:
             st.warning("Please wait 10 seconds before generating another lesson.")
             st.stop()
-        st.session_state.last_request = current_time
+        st.session_state.last_request = time.time()
 
-        # ------------- DAILY LIMIT CHECK -------------
+        # --- DAILY LIMIT ---
         if st.session_state.requests_today >= 5:
             st.warning("⚠️ Daily generation limit reached (5 lessons per session).")
             st.stop()
@@ -162,7 +152,6 @@ if menu == "Home":
             with st.spinner("Generating lesson..."):
                 prompt = f"""
 Create a structured lesson plan for {topic}.
-
 Include:
 1. Objectives
 2. Introduction
@@ -172,8 +161,7 @@ Include:
 6. Summary
 7. Slide Outline
 """
-
-                # ----------------- RETRY LOGIC -----------------
+                # --- RETRY & QUOTA HANDLING ---
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
@@ -201,27 +189,24 @@ Include:
                             st.error(f"Error: {e}")
                             st.stop()
 
-                # ----------------- SAVE FILES -----------------
+                # --- SAVE FILES ---
                 safe_topic = sanitize_filename(topic)
                 word_file = f"{safe_topic}_lesson.docx"
                 ppt_file = f"{safe_topic}_slides.pptx"
 
-                # --- Word ---
+                # Word
                 doc = Document()
                 doc.add_heading(f"Lesson Plan: {topic}", level=1)
                 doc.add_paragraph(lesson_text)
                 doc.save(word_file)
 
-                # --- PPT ---
+                # PPT
                 template_to_use = chosen_template
                 if chosen_template == "🎲 Random Template":
                     template_to_use = random.choice(available_templates)
                     st.info(f"Random template selected: {template_to_use}")
 
-                template_path = os.path.join(TEMPLATE_DIR, template_to_use)
-                prs = Presentation(template_path)
-
-                # Extract Slide Outline if available
+                prs = Presentation(os.path.join(TEMPLATE_DIR, template_to_use))
                 slide_outline_match = re.search(r"Slide Outline:(.*)", lesson_text, re.DOTALL)
                 if slide_outline_match:
                     sections = [s.strip() for s in slide_outline_match.group(1).split("\n") if s.strip()]
@@ -238,7 +223,7 @@ Include:
                         slide.placeholders[1].text = "\n".join(lines[1:])
                 prs.save(ppt_file)
 
-                # ----------------- DOWNLOAD BUTTONS -----------------
+                # --- DOWNLOAD BUTTONS ---
                 col1, col2 = st.columns(2)
                 with col1:
                     with open(word_file,"rb") as f:
@@ -265,7 +250,7 @@ if menu == "Download Analytics":
 # SETTINGS PAGE
 # -------------------------
 if menu == "Settings":
-    st.subheader("Teacher Login (Coming Soon)")
+    st.subheader("Teacher Login & Marketplace (Coming Soon)")
     st.info("""
 Future features:
 
