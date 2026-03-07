@@ -12,6 +12,7 @@ import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 import time
+import hashlib
 
 # -------------------------
 # Load environment variables
@@ -28,17 +29,25 @@ if "requests_today" not in st.session_state:
     st.session_state.requests_today = 0
 if "last_request" not in st.session_state:
     st.session_state.last_request = 0
+if "logged_in_teacher" not in st.session_state:
+    st.session_state.logged_in_teacher = None
 
 # -------------------------
-# Folder Setup
+# Folders and DB Setup
 # -------------------------
 TEMPLATE_DIR = "templates"
 PREVIEW_DIR = "template_previews"
 DOWNLOAD_LOG = "downloads.csv"
+USERS_DB = "teachers.csv"
 
 os.makedirs(TEMPLATE_DIR, exist_ok=True)
 os.makedirs(PREVIEW_DIR, exist_ok=True)
+
 available_templates = [f for f in os.listdir(TEMPLATE_DIR) if f.endswith(".pptx")]
+
+# Ensure users DB exists
+if not os.path.exists(USERS_DB):
+    pd.DataFrame(columns=["username","password_hash","email","role"]).to_csv(USERS_DB, index=False)
 
 # -------------------------
 # Helper Functions
@@ -55,8 +64,8 @@ def create_card_preview(text, color="#4B8BBE"):
         font = ImageFont.load_default()
     text = text.replace("_"," ").title()
     bbox = draw.textbbox((0,0), text, font=font)
-    w = bbox[2] - bbox[0]
-    h = bbox[3] - bbox[1]
+    w = bbox[2]-bbox[0]
+    h = bbox[3]-bbox[1]
     draw.text(((400-w)/2,(250-h)/2), text, fill="white", font=font)
     return img
 
@@ -73,6 +82,30 @@ def generate_lesson(prompt, api_key):
     model = genai.GenerativeModel("gemini-2.0-flash")
     response = model.generate_content(prompt)
     return response.text
+
+# -------------------------
+# Teacher Accounts Functions
+# -------------------------
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def register_teacher(username, password, email, role="teacher"):
+    df = pd.read_csv(USERS_DB)
+    if username in df["username"].values:
+        return False, "Username already exists"
+    password_hash = hash_password(password)
+    df = pd.concat([df, pd.DataFrame([[username, password_hash, email, role]], columns=df.columns)], ignore_index=True)
+    df.to_csv(USERS_DB, index=False)
+    return True, "Registration successful"
+
+def login_teacher(username, password):
+    df = pd.read_csv(USERS_DB)
+    password_hash = hash_password(password)
+    user = df[(df["username"]==username) & (df["password_hash"]==password_hash)]
+    if not user.empty:
+        return True, user.iloc[0].to_dict()
+    else:
+        return False, "Invalid username or password"
 
 # -------------------------
 # Sidebar Navigation
@@ -130,13 +163,13 @@ if menu == "Home":
     topic = st.text_input("📘 Lesson Topic")
 
     if st.button("✨ Generate Lesson"):
-        # --- COOLDOWN ---
+        # Cooldown
         if time.time() - st.session_state.last_request < 10:
             st.warning("Please wait 10 seconds before generating another lesson.")
             st.stop()
         st.session_state.last_request = time.time()
 
-        # --- DAILY LIMIT ---
+        # Daily limit
         if st.session_state.requests_today >= 5:
             st.warning("⚠️ Daily generation limit reached (5 lessons per session).")
             st.stop()
@@ -161,7 +194,7 @@ Include:
 6. Summary
 7. Slide Outline
 """
-                # --- RETRY & QUOTA HANDLING ---
+                # Retry + quota handling
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
@@ -189,7 +222,6 @@ Include:
                             st.error(f"Error: {e}")
                             st.stop()
 
-                # --- SAVE FILES ---
                 safe_topic = sanitize_filename(topic)
                 word_file = f"{safe_topic}_lesson.docx"
                 ppt_file = f"{safe_topic}_slides.pptx"
@@ -223,19 +255,19 @@ Include:
                         slide.placeholders[1].text = "\n".join(lines[1:])
                 prs.save(ppt_file)
 
-                # --- DOWNLOAD BUTTONS ---
+                # Download buttons
                 col1, col2 = st.columns(2)
                 with col1:
                     with open(word_file,"rb") as f:
                         if st.download_button("📄 Download Word", f, file_name=word_file):
-                            log_download(word_file)
+                            log_download(word_file, st.session_state["logged_in_teacher"]["username"] if st.session_state["logged_in_teacher"] else "anonymous")
                 with col2:
                     with open(ppt_file,"rb") as f:
                         if st.download_button("🎞️ Download Slides", f, file_name=ppt_file):
-                            log_download(ppt_file)
+                            log_download(ppt_file, st.session_state["logged_in_teacher"]["username"] if st.session_state["logged_in_teacher"] else "anonymous")
 
 # -------------------------
-# ANALYTICS PAGE
+# Analytics Page
 # -------------------------
 if menu == "Download Analytics":
     st.subheader("📊 Resource Downloads")
@@ -247,18 +279,42 @@ if menu == "Download Analytics":
         st.info("No downloads yet")
 
 # -------------------------
-# SETTINGS PAGE
+# Settings / Teacher Accounts
 # -------------------------
 if menu == "Settings":
-    st.subheader("Teacher Login & Marketplace (Coming Soon)")
-    st.info("""
-Future features:
-
-• Teacher accounts
-• Saved resources
-• Resource marketplace
-• Community templates
-""")
+    st.subheader("Teacher Accounts & Login")
+    if st.session_state["logged_in_teacher"]:
+        teacher = st.session_state["logged_in_teacher"]
+        st.success(f"✅ Logged in as {teacher['username']} ({teacher['role']})")
+        st.info("Future features: Saved resources, Marketplace, Community templates")
+        if st.button("Logout"):
+            st.session_state["logged_in_teacher"] = None
+            st.experimental_rerun()
+    else:
+        tab1, tab2 = st.tabs(["Login", "Register"])
+        with tab1:
+            st.markdown("### Login")
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
+            if st.button("Login", key="login_btn"):
+                success, result = login_teacher(username, password)
+                if success:
+                    st.session_state["logged_in_teacher"] = result
+                    st.success(f"Welcome {username}")
+                    st.experimental_rerun()
+                else:
+                    st.error(result)
+        with tab2:
+            st.markdown("### Register")
+            reg_username = st.text_input("Username", key="reg_username")
+            reg_email = st.text_input("Email", key="reg_email")
+            reg_password = st.text_input("Password", type="password", key="reg_password")
+            if st.button("Register", key="reg_btn"):
+                success, msg = register_teacher(reg_username, reg_password, reg_email)
+                if success:
+                    st.success(msg)
+                else:
+                    st.error(msg)
 
 # -------------------------
 # Footer
