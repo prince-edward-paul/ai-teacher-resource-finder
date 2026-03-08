@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit as st 
 import google.generativeai as genai
 from docx import Document
 from pptx import Presentation
@@ -136,6 +136,13 @@ def login_teacher(username, password):
 # Resource Functions
 # -------------------------
 def save_resource_for_teacher(username, resource_name, r_type, path, is_public=False, category="General", tags=""):
+    # Append username to filename to avoid preview conflicts
+    preview_file = f"{sanitize_filename(resource_name)}_{username}.png"
+    preview_path = os.path.join(PREVIEW_DIR, preview_file)
+    if not os.path.exists(preview_path):
+        img = create_card_preview(resource_name)
+        img.save(preview_path)
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
@@ -252,7 +259,6 @@ margin-bottom:20px;">
 <p style="font-size:18px;">Create lesson plans and PowerPoint slides instantly using AI</p>
 </div>
 """, unsafe_allow_html=True)
-
 # -------------------------
 # HOME PAGE
 # -------------------------
@@ -271,7 +277,8 @@ if menu == "Home":
     for i, resource in enumerate(resources_to_show):
         col = cols[i % 3]
         with col:
-            preview_path = os.path.join(PREVIEW_DIR, f"{resource}.png")
+            preview_file = f"{sanitize_filename(resource)}.png"
+            preview_path = os.path.join(PREVIEW_DIR, preview_file)
             if os.path.exists(preview_path):
                 st.image(preview_path, use_container_width=True)
             else:
@@ -279,6 +286,7 @@ if menu == "Home":
                 buf = io.BytesIO()
                 img.save(buf, format="PNG")
                 st.image(buf.getvalue(), use_container_width=True)
+
             st.markdown(f"**{resource}**")
             row = community_df[community_df["resource_name"]==resource]
             if not row.empty:
@@ -295,9 +303,10 @@ if menu == "Home":
             else:
                 if st.button(f"Preview / Request Download", key=f"guest_{i}"):
                     st.info("Log in to download or generate lessons")
-    # -------------------------
-    # Teacher Section: Generate Lessons
-    # -------------------------
+
+# -------------------------
+# Teacher Section: Generate Lessons
+# -------------------------
     if st.session_state.get("logged_in_teacher"):
         chosen_template = st.session_state.get("chosen_template", None)
         topic = st.text_input("📘 Lesson Topic")
@@ -321,7 +330,13 @@ if menu == "Home":
             st.info("No downloads yet.")
 
         # Generate Lesson
-        if st.button("✨ Generate Lesson"):
+        with st.form("generate_form"):
+            is_public = st.checkbox("🌐 Share this lesson publicly?", value=False)
+            category = st.selectbox("Category", ["General","Math","Science","English","History","Art"])
+            tags = st.text_input("Tags (comma separated)", "")
+            submitted = st.form_submit_button("✨ Generate Lesson")
+
+        if submitted:
             current_time = time.time()
             if current_time - st.session_state.last_request < 10:
                 st.warning("Please wait 10 seconds before generating another lesson.")
@@ -367,44 +382,39 @@ Include:
                             st.error(f"Error: {e}")
                             st.stop()
 
-                safe_topic = sanitize_filename(topic)
-                word_file = f"{safe_topic}_lesson.docx"
-                ppt_file = f"{safe_topic}_slides.pptx"
+            safe_topic = sanitize_filename(topic)
+            word_file = f"{safe_topic}_lesson.docx"
+            ppt_file = f"{safe_topic}_slides.pptx"
 
-                # Save Word
-                doc = Document()
-                doc.add_heading(f"Lesson Plan: {topic}", level=1)
-                doc.add_paragraph(lesson_text)
-                doc.save(word_file)
+            # Save Word
+            doc = Document()
+            doc.add_heading(f"Lesson Plan: {topic}", level=1)
+            doc.add_paragraph(lesson_text)
+            doc.save(word_file)
 
-                # Save PPT
-                template_to_use = chosen_template if chosen_template != "🎲 Random Template" else random.choice(available_templates)
-                prs = Presentation(os.path.join(TEMPLATE_DIR, template_to_use))
-                sections = [s.strip() for s in lesson_text.split("\n\n") if s.strip()]
-                for section in sections:
-                    slide = prs.slides.add_slide(prs.slide_layouts[1])
-                    lines = section.split("\n")
-                    slide.shapes.title.text = lines[0]
-                    if len(lines) > 1:
-                        slide.placeholders[1].text = "\n".join(lines[1:])
-                prs.save(ppt_file)
+            # Save PPT
+            template_to_use = chosen_template if chosen_template != "🎲 Random Template" else random.choice(available_templates)
+            prs = Presentation(os.path.join(TEMPLATE_DIR, template_to_use))
+            sections = [s.strip() for s in lesson_text.split("\n\n") if s.strip()]
+            for section in sections:
+                slide = prs.slides.add_slide(prs.slide_layouts[1])
+                lines = section.split("\n")
+                slide.shapes.title.text = lines[0]
+                if len(lines) > 1:
+                    slide.placeholders[1].text = "\n".join(lines[1:])
+            prs.save(ppt_file)
 
-                # Public/Category/Tags
-                is_public = st.checkbox("🌐 Share this lesson publicly?", value=False)
-                category = st.selectbox("Category", ["General","Math","Science","English","History","Art"])
-                tags = st.text_input("Tags (comma separated)", "")
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    with open(word_file,"rb") as f:
-                        if st.download_button("📄 Download Word", f, file_name=word_file):
-                            log_download(word_file, teacher["username"])
-                            save_resource_for_teacher(teacher["username"], word_file, "Word", os.path.abspath(word_file), is_public, category, tags)
-                with col2:
-                    with open(ppt_file,"rb") as f:
-                        if st.download_button("🎞️ Download Slides", f, file_name=ppt_file):
-                            log_download(ppt_file, teacher["username"])
-                            save_resource_for_teacher(teacher["username"], ppt_file, "PPT", os.path.abspath(ppt_file), is_public, category, tags)
+            col1, col2 = st.columns(2)
+            with col1:
+                with open(word_file,"rb") as f:
+                    if st.download_button("📄 Download Word", f, file_name=word_file):
+                        log_download(word_file, teacher["username"])
+                        save_resource_for_teacher(teacher["username"], word_file, "Word", os.path.abspath(word_file), is_public, category, tags)
+            with col2:
+                with open(ppt_file,"rb") as f:
+                    if st.download_button("🎞️ Download Slides", f, file_name=ppt_file):
+                        log_download(ppt_file, teacher["username"])
+                        save_resource_for_teacher(teacher["username"], ppt_file, "PPT", os.path.abspath(ppt_file), is_public, category, tags)
 
 # -------------------------
 # Download Analytics
@@ -474,48 +484,51 @@ with tab3:
         new_pass = st.text_input("New Password", type="password", key="new_pass")
         confirm_pass = st.text_input("Confirm New Password", type="password", key="confirm_pass")
         if st.button("Update Password"):
-            conn = sqlite3.connect(DB_FILE)
-            c = conn.cursor()
-            c.execute("SELECT password_hash FROM users WHERE username=?", (teacher['username'],))
-            old_hash = c.fetchone()[0]
-            if hash_password(current_pass) != old_hash:
-                st.error("Current password is incorrect")
-            elif new_pass != confirm_pass:
-                st.error("New passwords do not match")
+            if not new_pass:
+                st.error("New password cannot be empty")
             else:
-                c.execute("UPDATE users SET password_hash=? WHERE username=?",
-                          (hash_password(new_pass), teacher['username']))
-                conn.commit()
-                st.success("Password updated successfully")
-            conn.close()
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute("SELECT password_hash FROM users WHERE username=?", (teacher['username'],))
+                old_hash = c.fetchone()[0]
+                if hash_password(current_pass) != old_hash:
+                    st.error("Current password is incorrect")
+                elif new_pass != confirm_pass:
+                    st.error("New passwords do not match")
+                else:
+                    c.execute("UPDATE users SET password_hash=? WHERE username=?",
+                              (hash_password(new_pass), teacher['username']))
+                    conn.commit()
+                    st.success("Password updated successfully")
+                conn.close()
 
         # Manage resources
         st.markdown("### 💾 Your Saved Resources")
         user_saved = get_saved_resources(teacher["username"])
         if not user_saved.empty:
             for i, row in user_saved.iterrows():
-                st.markdown(f"**{row['resource_name']}** ({row['type']}) - Public: {bool(row['is_public'])}")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button(f"Delete {row['resource_name']}", key=f"del_{i}"):
-                        conn = sqlite3.connect(DB_FILE)
-                        c = conn.cursor()
-                        c.execute("DELETE FROM resources WHERE id=?", (row['id'],))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Deleted {row['resource_name']}")
-                        st.experimental_rerun()
-                with col2:
-                    is_public_new = st.checkbox("Public", value=bool(row['is_public']), key=f"pub_{i}")
-                    if st.button("Update", key=f"upd_{i}"):
-                        conn = sqlite3.connect(DB_FILE)
-                        c = conn.cursor()
-                        c.execute("UPDATE resources SET is_public=?, category=?, tags=? WHERE id=?",
-                                  (int(is_public_new), row['category'], row['tags'], row['id']))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Updated {row['resource_name']}")
-                        st.experimental_rerun()
+                with st.expander(f"{row['resource_name']} ({row['type']}) - Public: {bool(row['is_public'])}"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button(f"Delete {row['resource_name']}", key=f"del_{i}"):
+                            conn = sqlite3.connect(DB_FILE)
+                            c = conn.cursor()
+                            c.execute("DELETE FROM resources WHERE id=?", (row['id'],))
+                            conn.commit()
+                            conn.close()
+                            st.success(f"Deleted {row['resource_name']}")
+                            st.experimental_rerun()
+                    with col2:
+                        is_public_new = st.checkbox("Public", value=bool(row['is_public']), key=f"pub_{i}")
+                        if st.button("Update", key=f"upd_{i}"):
+                            conn = sqlite3.connect(DB_FILE)
+                            c = conn.cursor()
+                            c.execute("UPDATE resources SET is_public=?, category=?, tags=? WHERE id=?",
+                                      (int(is_public_new), row['category'], row['tags'], row['id']))
+                            conn.commit()
+                            conn.close()
+                            st.success(f"Updated {row['resource_name']}")
+                            st.experimental_rerun()
 
 # -------------------------
 # Footer
