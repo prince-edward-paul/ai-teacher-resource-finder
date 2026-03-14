@@ -1,115 +1,40 @@
+# ai_generator.py
 import google.generativeai as genai
 import streamlit as st
 
-# Gemini key from Streamlit secrets
-API_KEY = st.secrets["GEMINI_API_KEY"]
+# Configure Gemini API from Streamlit secrets
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-genai.configure(api_key=API_KEY)
-
-
-def get_model():
-    return genai.GenerativeModel("gemini-1.5-flash")
-
-
-@st.cache_data
 def generate_lesson(topic):
-
-    model = get_model()
-
+    """
+    Generate a structured, student-centered lesson plan for the given topic.
+    Includes objectives, activities, assessment, summary, and slide outline.
+    """
     prompt = f"""
-Create a structured lesson plan.
-
-Topic: {topic}
+Create a student-centered, 21st century teaching lesson plan for: {topic}
 
 Include:
-
-1. Lesson objectives
-2. Starter activity
-3. Teaching explanation
-4. Class activities
-5. Assessment questions
-6. Summary
-7. Homework
-
-Also create slide outline using this format:
-
-SLIDE: Title
-Content
-
-SLIDE: Objectives
-• bullet
-• bullet
-
-SLIDE: Key concept
-Explanation
-
-SLIDE: Activity
-Activity description
-
-SLIDE: Assessment
-3 questions
-
-SLIDE: Summary
-Lesson summary
+1. Learning objectives
+2. Starter activity / engagement
+3. Key teaching points
+4. Classroom activities (interactive, collaborative)
+5. Assessment ideas (formative and summative)
+6. Summary / recap
+7. Slide-by-slide outline with suggested images or visuals (mention sources if possible)
+Format each section clearly, separate by double line breaks.
 """
-
     try:
-        response = model.generate_content(prompt)
-        return response.text
+        # Use the latest supported text model
+        model = genai.models.get("text-bison-001")
+        response = model.generate(prompt=prompt)
+        return response.content
 
     except Exception as e:
-
-        if "quota" in str(e).lower():
-            return "⚠️ AI is busy. Try again later."
-
-        if "429" in str(e):
-            return "⚠️ Too many requests. Wait and try again."
-
-        return f"AI error: {e}"
-
-
-@st.cache_data
-def generate_worksheet(topic):
-
-    model = get_model()
-
-    prompt = f"""
-Create a student worksheet.
-
-Topic: {topic}
-
-Include:
-
-5 short questions
-5 multiple choice questions
-2 critical thinking questions
-Answer key
-"""
-
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-
-    except Exception as e:
-        return f"Worksheet error: {e}"
-
-
-@st.cache_data
-def generate_quiz(topic):
-
-    model = get_model()
-
-    prompt = f"""
-Create a quiz.
-
-Topic: {topic}
-
-10 multiple choice questions with answers.
-"""
-
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-
-    except Exception as e:
-        return f"Quiz error: {e}"
+        # Friendly error handling for Streamlit users
+        if "404" in str(e) or "model not found" in str(e).lower():
+            st.error("Gemini model not found. Check your API key or model version.")
+        elif "quota" in str(e).lower():
+            st.warning("⚠️ AI usage limit reached. Please wait and try again.")
+        else:
+            st.error(f"AI generation error: {e}")
+        return None
