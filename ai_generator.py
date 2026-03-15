@@ -2,44 +2,42 @@
 import google.generativeai as genai
 import streamlit as st
 import logging
+import time
 
 # Configure Gemini API from Streamlit secrets
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 # Set up logging for errors
-logging.basicConfig(filename="ai_errors.log", level=logging.ERROR,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    filename="ai_errors.log",
+    level=logging.ERROR,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-
-def get_supported_model():
+def get_supported_models():
     """
-    Returns the first available generative text model from Gemini that supports generate_content.
-    Falls back to a safe model if none found.
+    Returns a list of available Gemini text-out models that support generateContent.
+    Prioritizes Gemini 3 Flash, then Gemini 2.5 Flash.
     """
     try:
         models = genai.list_models()
+        supported = []
         for m in models:
             if getattr(m, "category", "").lower() == "text-out":
                 if getattr(m, "capabilities", None) and "generateContent" in m.capabilities:
-                    return m.name
-        # If no supported model found, pick a known safe model in your project
-        fallback_models = ["Gemini 2.5 Flash", "Gemini 3 Flash", "Gemini 3.1 Flash Lite"]
-        for fb in fallback_models:
-            try:
-                genai.GenerativeModel(fb)  # check if available
-                return fb
-            except:
-                continue
-        return None
+                    supported.append(m.name)
+        # Sort: Gemini 3 Flash first, then Gemini 2.5 Flash, then others
+        preferred_order = ["Gemini 3 Flash", "Gemini 2.5 Flash"]
+        sorted_models = sorted(supported, key=lambda x: preferred_order.index(x) if x in preferred_order else 99)
+        return sorted_models
     except Exception as e:
         logging.error(f"Failed to list models: {e}")
-        return None
+        return []
 
-
-def generate_lesson(topic):
+def generate_lesson(topic, retries=2):
     """
     Generate a structured, student-centered lesson plan for the given topic.
-    Includes objectives, activities, assessment, summary, and slide outline.
+    Retries with fallback models if the first one fails.
     """
     prompt = f"""
 Create a student-centered, 21st century teaching lesson plan for: {topic}
@@ -56,18 +54,24 @@ Include:
 Format each section clearly, separate by double line breaks.
 """
 
-    model_name = get_supported_model()
-    if not model_name:
+    models_to_try = get_supported_models()
+    if not models_to_try:
         logging.error(f"No supported AI model available for topic '{topic}'")
         st.error("⚠️ AI lesson generation is not available at the moment. Please try later.")
         return None
 
-    try:
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
-        return response.text
+    for attempt, model_name in enumerate(models_to_try[:retries], start=1):
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            if response and hasattr(response, "text") and response.text.strip():
+                return response.text
+            else:
+                logging.error(f"Attempt {attempt}: AI response empty or invalid for topic '{topic}' with model '{model_name}'")
+        except Exception as e:
+            logging.error(f"Attempt {attempt}: AI generation failed for topic '{topic}' using model '{model_name}': {e}")
+            time.sleep(1)  # slight pause before retry
 
-    except Exception as e:
-        logging.error(f"AI generation failed for topic '{topic}' using model '{model_name}': {e}")
-        st.error("⚠️ An error occurred while generating the lesson. Please try again later.")
-        return None
+    st.error("⚠️ An error occurred while generating the lesson. Please try again later.")
+    return None
+
