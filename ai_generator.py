@@ -14,19 +14,26 @@ logging.basicConfig(filename="ai_errors.log", level=logging.ERROR,
 def get_supported_model():
     """
     Returns the first available generative text model from Gemini that supports generate_content.
+    Falls back to a safe model if none found.
     """
     try:
         models = genai.list_models()
         for m in models:
-            if getattr(m, "capabilities", None):
-                if "generateContent" in m.capabilities:
+            if getattr(m, "category", "").lower() == "text-out":
+                if getattr(m, "capabilities", None) and "generateContent" in m.capabilities:
                     return m.name
-        # fallback
-        return "models/text-bison-001"
+        # If no supported model found, pick a known safe model in your project
+        fallback_models = ["Gemini 2.5 Flash", "Gemini 3 Flash", "Gemini 3.1 Flash Lite"]
+        for fb in fallback_models:
+            try:
+                genai.GenerativeModel(fb)  # check if available
+                return fb
+            except:
+                continue
+        return None
     except Exception as e:
         logging.error(f"Failed to list models: {e}")
-        # fallback model
-        return "models/text-bison-001"
+        return None
 
 
 def generate_lesson(topic):
@@ -50,14 +57,17 @@ Format each section clearly, separate by double line breaks.
 """
 
     model_name = get_supported_model()
+    if not model_name:
+        logging.error(f"No supported AI model available for topic '{topic}'")
+        st.error("⚠️ AI lesson generation is not available at the moment. Please try later.")
+        return None
+
     try:
         model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         return response.text
 
     except Exception as e:
-        # Log the full error for debugging
-        logging.error(f"AI generation failed for topic '{topic}': {e}")
-        # Show friendly message to user
+        logging.error(f"AI generation failed for topic '{topic}' using model '{model_name}': {e}")
         st.error("⚠️ An error occurred while generating the lesson. Please try again later.")
         return None
