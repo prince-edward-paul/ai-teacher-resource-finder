@@ -1,13 +1,18 @@
-import sqlite3
 import hashlib
-from database import get_conn
+import sqlite3
+from database import DB_FILE
 
+# -------------------------
+# Password hashing
+# -------------------------
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-
+# -------------------------
+# Register teacher
+# -------------------------
 def register_teacher(username, password, email):
-    conn = get_conn()
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     try:
         c.execute("INSERT INTO users (username, password_hash, email, role) VALUES (?,?,?,?)",
@@ -19,9 +24,11 @@ def register_teacher(username, password, email):
     conn.close()
     return True, "Registered successfully"
 
-
+# -------------------------
+# Login teacher
+# -------------------------
 def login_teacher(username, password):
-    conn = get_conn()
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT username, password_hash, email, role FROM users WHERE username=?", (username,))
     row = c.fetchone()

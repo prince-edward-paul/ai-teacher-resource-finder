@@ -1,52 +1,65 @@
 # ppt_generator.py
 from pptx import Presentation
 from pptx.util import Inches, Pt
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import PP_ALIGN
 import os
 import uuid
 import re
 import requests
 from io import BytesIO
-from PIL import Image
+
+TEMPLATE_DIR = "templates"
+GENERATED_DIR = "generated"
+os.makedirs(GENERATED_DIR, exist_ok=True)
 
 def sanitize_filename(name):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', name)
 
-def generate_presentation(topic, lesson_text, template_file):
+def generate_presentation(topic, lesson_text, chosen_template=None):
     """
-    Generates a PowerPoint presentation based on a lesson text.
-    - Follows slide-by-slide outline in the lesson text.
-    - Inserts suggested images if mentioned in the outline.
-    - Student-centered, 21st-century teaching format.
+    Generates a student-centered PowerPoint presentation:
+    - Uses chosen template or selects one randomly.
+    - Inserts AI-generated lesson content slide by slide.
+    - Adds suggested images from URLs.
+    - 21st-century teaching standards (font, alignment, readability).
     Returns the path to the generated PPTX file.
     """
-    prs = Presentation(os.path.join("templates", template_file))
+
+    # Select template
+    template_file = chosen_template if chosen_template else \
+        os.path.join(TEMPLATE_DIR, sorted(os.listdir(TEMPLATE_DIR))[0])
+    prs = Presentation(os.path.join(TEMPLATE_DIR, template_file))
 
     # Split lesson into sections for slides
     sections = [s.strip() for s in lesson_text.split("\n\n") if s.strip()]
 
     for section in sections:
         lines = section.split("\n")
-        slide_title = lines[0]  # First line is the title
-        content_lines = lines[1:]  # Remaining lines are content
+        slide_title = lines[0][:80]  # Limit title length for readability
+        content_lines = lines[1:]  
 
-        # Use Title + Content layout if available
+        # Select slide layout (Title + Content)
         slide_layout = prs.slide_layouts[1] if len(prs.slide_layouts) > 1 else prs.slide_layouts[0]
         slide = prs.slides.add_slide(slide_layout)
         slide.shapes.title.text = slide_title
 
-        # Insert content in the placeholder or create a textbox
+        # Insert content in placeholder or textbox
+        content_text = "\n".join(content_lines)[:1000]  # Limit content size
         if len(slide.placeholders) > 1:
-            slide.placeholders[1].text = "\n".join(content_lines)
+            slide.placeholders[1].text = content_text
+            for para in slide.placeholders[1].text_frame.paragraphs:
+                para.font.size = Pt(18)
+                para.alignment = PP_ALIGN.LEFT
         else:
             left, top, width, height = Inches(1), Inches(1.5), Inches(8), Inches(4)
             txBox = slide.shapes.add_textbox(left, top, width, height)
             tf = txBox.text_frame
-            tf.text = "\n".join(content_lines)
-            for paragraph in tf.paragraphs:
-                paragraph.font.size = Pt(18)
+            tf.text = content_text
+            for para in tf.paragraphs:
+                para.font.size = Pt(18)
+                para.alignment = PP_ALIGN.LEFT
 
-        # Check for suggested images in the content (e.g., "Image: https://...")
+        # Insert suggested images from content (e.g., "Image: https://...")
         for line in content_lines:
             if "Image:" in line or "Source:" in line:
                 url_match = re.search(r"(https?://\S+)", line)
@@ -60,9 +73,8 @@ def generate_presentation(topic, lesson_text, template_file):
                     except:
                         pass  # ignore image errors
 
-    # Save generated presentation
-    os.makedirs("generated", exist_ok=True)
+    # Save presentation
     file_name = f"{sanitize_filename(topic)}_{uuid.uuid4().hex[:5]}.pptx"
-    path = os.path.join("generated", file_name)
+    path = os.path.join(GENERATED_DIR, file_name)
     prs.save(path)
     return path

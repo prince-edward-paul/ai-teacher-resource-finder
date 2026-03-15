@@ -25,16 +25,12 @@ Format each section clearly, separate by double line breaks.
 """
     try:
         # Use the latest supported text model
-        model = genai.models.get("text-bison-001")
-        response = model.generate(prompt=prompt)
-        return response.content
-
+        model = genai.GenerativeModel("models/text-bison-001")  # Stable model
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        # Friendly error handling for Streamlit users
-        if "404" in str(e) or "model not found" in str(e).lower():
-            st.error("Gemini model not found. Check your API key or model version.")
-        elif "quota" in str(e).lower():
+        if "quota" in str(e).lower() or "429" in str(e):
             st.warning("⚠️ AI usage limit reached. Please wait and try again.")
         else:
-            st.error(f"AI generation error: {e}")
+            st.error(f"AI Error: {e}")
         return None

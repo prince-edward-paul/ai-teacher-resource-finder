@@ -1,12 +1,23 @@
-# app.py
 import streamlit as st
 import os, io, time, random
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 
+# -------------------------
 # Modular imports
+# -------------------------
 from auth import login_teacher, register_teacher, hash_password
-from database import init_db, get_saved_resources, get_public_resources, save_resource_for_teacher, log_download, like_resource, get_downloads, get_notifications, mark_notifications_read
+from database import (
+    init_db,
+    get_saved_resources,
+    get_public_resources,
+    save_resource_for_teacher,
+    log_download,
+    like_resource,
+    get_downloads,
+    get_notifications,
+    mark_notifications_read
+)
 from ai_generator import generate_lesson
 from ppt_generator import generate_presentation
 from doc_generator import generate_doc
@@ -16,8 +27,12 @@ from doc_generator import generate_doc
 # -------------------------
 TEMPLATE_DIR = "templates"
 PREVIEW_DIR = "template_previews"
+GENERATED_DIR = "generated"
+
 os.makedirs(TEMPLATE_DIR, exist_ok=True)
 os.makedirs(PREVIEW_DIR, exist_ok=True)
+os.makedirs(GENERATED_DIR, exist_ok=True)
+
 available_templates = [f for f in os.listdir(TEMPLATE_DIR) if f.endswith(".pptx")]
 
 # -------------------------
@@ -84,13 +99,27 @@ margin-bottom:20px;">
 if menu == "Home":
     st.subheader("🔍 Search Templates / Community Resources")
 
+    # Show template previews
+    st.markdown("### 🖼 Available Templates")
+    cols = st.columns(len(available_templates))
+    for i, template in enumerate(available_templates):
+        col = cols[i % len(available_templates)]
+        preview_file = f"{sanitize_filename(template)}.png"
+        preview_path = os.path.join(PREVIEW_DIR, preview_file)
+        if not os.path.exists(preview_path):
+            img = create_card_preview(template)
+            img.save(preview_path)
+        col.image(preview_path, use_column_width=True)
+        if col.button(f"Select {template}", key=f"tpl_{i}"):
+            st.session_state["chosen_template"] = template
+
+    # Search resources
     categories = ["All","Math","Science","English","History","Art"]
     selected_category = st.selectbox("Category", categories)
     search_query = st.text_input("Search template/resource", "")
 
-    filtered_templates = [t for t in available_templates if search_query.lower() in t.lower()] if search_query else available_templates
     community_df = get_public_resources(search_query, selected_category)
-    resources_to_show = filtered_templates + community_df["resource_name"].tolist() + ["🎲 Random Template"]
+    resources_to_show = community_df["resource_name"].tolist() + ["🎲 Random Template"]
 
     cols = st.columns(3)
     for i, resource in enumerate(resources_to_show):
@@ -164,15 +193,19 @@ if menu == "Home":
                 st.warning("Select a template first")
                 st.stop()
 
-            # Generate AI lesson
+            # Generate AI lesson with error handling
             with st.spinner("Generating lesson..."):
-                lesson_text = generate_lesson(topic)
+                try:
+                    lesson_text = generate_lesson(topic)
+                except Exception as e:
+                    st.error(f"Error generating lesson: {e}")
+                    st.stop()
                 if not lesson_text:
+                    st.warning("No lesson generated. Try again later.")
                     st.stop()
 
-            # Save Word document
+            # Save Word and PPT
             word_file = generate_doc(topic, lesson_text)
-            # Save PPT presentation
             template_to_use = chosen_template if chosen_template != "🎲 Random Template" else random.choice(available_templates)
             ppt_file = generate_presentation(topic, lesson_text, template_to_use)
 
@@ -259,8 +292,18 @@ with tab3:
         if st.button("Update Password"):
             if not new_pass:
                 st.error("New password cannot be empty")
+            elif new_pass != confirm_pass:
+                st.error("Passwords do not match")
             else:
-                st.success("Password updated (DB update code here)")
+                # Update password in DB
+                import sqlite3
+                conn = sqlite3.connect("ai_teacher.db")
+                c = conn.cursor()
+                c.execute("UPDATE users SET password_hash=? WHERE username=?",
+                          (hash_password(new_pass), teacher['username']))
+                conn.commit()
+                conn.close()
+                st.success("Password updated successfully")
 
 # -------------------------
 # Footer
